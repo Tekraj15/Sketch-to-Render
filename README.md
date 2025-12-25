@@ -7,8 +7,11 @@ The goal is to move beyond static "prompt-and-wait" workflows to an interactive 
 
 ## 2. Objective
 Core Utility: Translate low-detail Canny/Scribble inputs into specific automotive design languages (e.g., Porsche/Audi styles) using Fine-tuned LoRAs.
+
 Engineering Goal 1 (Control): Implement strict structural guidance using ControlNet to respect the designer's original lines.
+
 Engineering Goal 2 (Speed): Reduce inference latency from ~4s (standard SDXL) to <100ms to enable real-time interactivity.
+
 Engineering Goal 3 (Efficiency): Optimize memory footprint via Quantization (INT8/FP8) to allow deployment on consumer-grade GPUs.
 
 
@@ -35,7 +38,7 @@ graph LR
     Engine --> Output["Photorealistic Render"]
     Output --> UI
     
-    subgraph "Optimization Layer (Phase III)"
+    subgraph "Optimization Layer"
         TRT["TensorRT Compilation"]
         Quant["INT8 Quantization"]
     end
@@ -68,11 +71,11 @@ Pipeline: StreamDiffusion or custom pipeline implementation to handle batch-stre
 
 
 ## 4. Tech Stack
-Deep Learning Framework: PyTorch 2.x
+**Deep Learning & Computer Vision Framework**: PyTorch 2.x, OpenCV
 
-Diffusion Library: Hugging Face diffusers (Pipeline orchestration)
+**Diffusion Library**: Hugging Face diffusers (Pipeline orchestration)
 
-Optimization:
+**Optimization**: 
 
 - TensorRT (NVIDIA Inference Accelerator)
 
@@ -80,31 +83,6 @@ Optimization:
 
 - PEFT (For LoRA loading)
 
-Computer Vision: OpenCV (Edge detection, pre-processing)
+**Frontend/UI**: Gradio (with Realtime sketching canvas capabilities) or Streamlit.
 
-Frontend/UI: Gradio (with Realtime sketching canvas capabilities) or Streamlit.
-
-Tracking: Weights & Biases (W&B) for logging inference metrics (latency vs. FID)
-
-## 5. Repository Structure
-
-├── assets/                  # Example sketches and reference output images
-├── configs/                 # YAML configs for LoRA training and Inference settings
-│   ├── train_lora.yaml
-│   └── inference_lcm.yaml
-├── data/                    # Scripts for dataset preparation (Car design scraping)
-├── models/                  # Directory for storing compiled TensorRT engines (.plan) and LoRAs
-├── src/
-│   ├── engine/
-│   │   ├── builder.py       # Logic to compile ONNX/Torch models to TensorRT
-│   │   └── pipeline.py      # Custom optimized inference pipeline (non-standard diffusers)
-│   ├── processing/
-│   │   └── preprocessor.py  # Canny/Scribble detection logic
-│   └── ui/
-│       └── app.py           # Gradio realtime canvas application
-├── benchmarks/              # Scripts to stress-test FPS and VRAM usage
-│   ├── benchmark_torch.py
-│   └── benchmark_trt.py
-├── notebooks/               # Experimental notebooks for LoRA testing
-├── requirements.txt
-└── README.md
+**MLOps(Experiment Tracking)**: Weights & Biases (W&B) for logging inference metrics (latency vs. FID)
