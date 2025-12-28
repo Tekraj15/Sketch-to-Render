@@ -13,23 +13,21 @@ preprocessor = Preprocessor()
 def process_sketch(sketch_data, prompt, neg_prompt, steps, guidance, control_scale):
     """
     Callback for UI interaction.
-    sketch_data is a dict with 'background' and 'layers' or a list of images.
-    In modern Gradio Sketchpad, it might be different. 
-    We'll assume it returns the composite image.
     """
     if sketch_data is None:
-        return None
+        return None, "0ms"
     
-    # Extract image from Gradio data
-    # Gradio 5.x Sketchpad returns a dict with "composite"
     if isinstance(sketch_data, dict):
         sketch_image = sketch_data.get("composite")
     else:
         sketch_image = sketch_data
         
     if sketch_image is None:
-        return None
+        return None, "0ms"
         
+    import time
+    start_time = time.time()
+    
     # Resize and preprocess
     sketch_image = Image.fromarray(np.uint8(sketch_image)).convert("RGB")
     control_image = preprocessor.get_canny(sketch_image)
@@ -44,12 +42,13 @@ def process_sketch(sketch_data, prompt, neg_prompt, steps, guidance, control_sca
         controlnet_conditioning_scale=control_scale
     )
     
-    return output
+    latency = f"{(time.time() - start_time) * 1000:.0f}ms"
+    
+    return output, latency
 
 # UI Layout
 with gr.Blocks(title="Sketch-to-Render: Automotive Design Studio Using Stable Diffusion") as demo:
     gr.Markdown("# 🏎️ Sketch-to-Render: Real-Time Automotive Design Studio")
-    gr.Markdown("Draw your automotive concept on the left and see it rendered in real-time on the right.")
     
     with gr.Row():
         with gr.Column():
@@ -60,10 +59,13 @@ with gr.Blocks(title="Sketch-to-Render: Automotive Design Studio Using Stable Di
                 canvas_size=(512, 512)
             )
             
-            prompt = gr.Textbox(
-                label="Design Prompt", 
-                value=engine.config['ui']['default_prompt']
-            )
+            with gr.Row():
+                prompt = gr.Textbox(
+                    label="Design Prompt", 
+                    value=engine.config['ui']['default_prompt'],
+                    scale=4
+                )
+                latency_meter = gr.Label(label="Latency", value="0ms", scale=1)
             
             neg_prompt = gr.Textbox(
                 label="Negative Prompt", 
@@ -81,19 +83,17 @@ with gr.Blocks(title="Sketch-to-Render: Automotive Design Studio Using Stable Di
             output_render = gr.Image(label="AI Render", interactive=False)
             
     # Event Handlers
-    # 'change' on sketchpad triggers real-time. 
-    # Note: might need 'step' or 'release' if it's too frequent.
     sketchpad.change(
         fn=process_sketch, 
         inputs=[sketchpad, prompt, neg_prompt, steps, guidance, control_scale], 
-        outputs=output_render,
-        show_progress="hidden" # For smoother real-time feel
+        outputs=[output_render, latency_meter],
+        show_progress="hidden"
     )
     
     run_btn.click(
         fn=process_sketch,
         inputs=[sketchpad, prompt, neg_prompt, steps, guidance, control_scale],
-        outputs=output_render
+        outputs=[output_render, latency_meter]
     )
 
 if __name__ == "__main__":
