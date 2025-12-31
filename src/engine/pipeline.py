@@ -1,74 +1,67 @@
 import torch
-from diffusers import StableDiffusionControlNetPipeline, ControlNetModel, LCMScheduler
+from diffusers import (
+    StableDiffusionControlNetPipeline, 
+    ControlNetModel, 
+    LCMScheduler,
+    AutoencoderKL
+)
 from PIL import Image
-from typing import Optional, List
 import yaml
-import os
 
 class SketchToRenderEngine:
     def __init__(self, config_path: str):
-        with open(config_path, "r") as f:
+        with open(config_path, 'r') as f:
             self.config = yaml.safe_load(f)
-        
-        # Determine Device
-        if 'device' in self.config['pipeline']:
-            self.device = self.config['pipeline']['device']
-        else:
-            if torch.backends.mps.is_available():
-                self.device = "mps"
-            elif torch.cuda.is_available():
-                self.device = "cuda"
-            else:
-                self.device = "cpu"
-        
-        # Validation for MPS
-        if self.device == "mps" and not torch.backends.mps.is_available():
-            print("MPS requested but not available. Falling back to CPU.")
-            self.device = "cpu"
             
-        print(f"Initializing engine on device: {self.device}")
+        print("Initializing engine...")
         
-        # Load ControlNet
+        # 1. Force Float32 for Stability on macOS < 14.0
+        # Float16 unstable on my OS version without NaNs.
+        self.dtype = torch.float32
+        
+        # 2. Load ControlNet
+        print("Loading ControlNet...")
         self.controlnet = ControlNetModel.from_pretrained(
             self.config['pipeline']['controlnet_model'], 
-            torch_dtype=torch.float16 if self.device != "cpu" else torch.float32,
-            use_safetensors=True
+            torch_dtype=self.dtype
         )
         
-        # Load Pipeline
-        self.distillation_type = self.config['pipeline'].get('distillation_type', 'lcm')
-        
-        # Adjust base model if using Turbo
+        # 3. Load Main Pipeline
+        print("Loading Stable Diffusion...")
         base_model_id = self.config['pipeline']['base_model']
-        if self.distillation_type == "turbo" and "turbo" not in base_model_id:
-             # If user explicitly wants turbo but base model isn't turbo, we might want to warn or swap
-             # For now, we assume the config specifies the correct model for the mode
-             pass
-
         self.pipe = StableDiffusionControlNetPipeline.from_pretrained(
             base_model_id,
             controlnet=self.controlnet,
-            torch_dtype=torch.float16 if self.device != "cpu" else torch.float32,
-            safety_checker=None,
-            use_safetensors=True,
-            variant="fp16" if self.device != "cpu" and "turbo" not in base_model_id else None
-        ).to(self.device)
+            torch_dtype=self.dtype,
+            safety_checker=None
+        )
+
+        # 4. MEMORY OPTIMIZATION STRATEGY (Fix for slower memory swapping)
+        if torch.backends.mps.is_available():
+            self.device = "mps"
+            print("Mac Silicon Detected. Applying Memory Optimizations...")
+            
+            # A. Move Pipeline to MPS
+            self.pipe.to(self.device)
+            
+            # B. Enable Attention Slicing (Saves VRAM)
+            self.pipe.enable_attention_slicing()
+            
+            # C. VAE Tiling (Prevents memory spikes during decode)
+            self.pipe.enable_vae_tiling()
+            
+            # Note: We are NOT using cpu_offload here because on some M1s 
+            # with standard SD 1.5, simple attention slicing + float32 is usually enough 
+            # if we don't hold gradients.
+        else:
+            self.device = "cpu"
+            self.pipe.to("cpu")
         
-        # Configure Distillation
-        if self.distillation_type == "lcm":
-            # Load LCM LoRA for fast inference
+        # 5. LCM Distillation
+        if self.config['pipeline'].get('distillation_type') == "lcm":
+            print("⚡ Loading LCM-LoRA...")
             self.pipe.load_lora_weights(self.config['pipeline']['lcm_lora_id'])
             self.pipe.scheduler = LCMScheduler.from_config(self.pipe.scheduler.config)
-        elif self.distillation_type == "turbo":
-            # Turbo usually uses a specific scheduler
-            from diffusers import AutoencoderKL
-            # Turbo models often have their own fused scheduler/lora
-            # But if using standard sd-turbo, we just update weights
-            pass
-        
-        # Enable Attention Slicing for Mac/Low VRAM
-        if self.device == "mps" or self.device == "cuda":
-            self.pipe.enable_attention_slicing()
 
     def generate(
         self, 
@@ -79,26 +72,24 @@ class SketchToRenderEngine:
         guidance_scale: float = 1.0,
         controlnet_conditioning_scale: float = 1.0
     ) -> Image.Image:
-        """
-        Performs inference to transform sketch into render.
-        """
-        output = self.pipe(
-            prompt=prompt,
-            negative_prompt=negative_prompt,
-            image=control_image,
-            num_inference_steps=num_inference_steps,
-            guidance_scale=guidance_scale,
-            controlnet_conditioning_scale=controlnet_conditioning_scale,
-        ).images[0]
         
-        return output
+        generator = torch.Generator(device=self.device).manual_seed(42)
+        
+        # Standardize inputs
+        guidance_scale = float(guidance_scale)
+        controlnet_conditioning_scale = float(controlnet_conditioning_scale)
 
-    def load_custom_lora(self, lora_path: str, weight_name: Optional[str] = None):
-        """
-        Loads a custom design LoRA (e.g., Porsche design).
-        """
-        if os.path.exists(lora_path):
-            self.pipe.load_lora_weights(lora_path, weight_name=weight_name)
-            print(f"Loaded custom LoRA from {lora_path}")
-        else:
-            print(f"LoRA path {lora_path} does not exist.")
+        # Inference
+        # We rely on the pipeline's internal handling now that we are pure Float32
+        with torch.inference_mode():
+            output = self.pipe(
+                prompt=prompt,
+                negative_prompt=negative_prompt,
+                image=control_image,
+                num_inference_steps=num_inference_steps,
+                guidance_scale=guidance_scale,
+                controlnet_conditioning_scale=controlnet_conditioning_scale,
+                generator=generator
+            )
+            
+        return output.images[0]
