@@ -16,7 +16,7 @@ class SketchToRenderEngine:
         print("Initializing engine...")
         
         # 1. Force Float32 for Stability on macOS < 14.0
-        # Float16 unstable on my OS version without NaNs.
+        # As Float16 is unstable on my macOS < 14.0 OS version without NaNs.
         self.dtype = torch.float32
         
         # 2. Load ControlNet
@@ -39,20 +39,17 @@ class SketchToRenderEngine:
         # 4. MEMORY OPTIMIZATION STRATEGY (Fix for slower memory swapping)
         if torch.backends.mps.is_available():
             self.device = "mps"
-            print("Mac Silicon Detected. Applying Memory Optimizations...")
+            print("Mac Silicon Detected. Applying Smart Offloading...")
             
-            # A. Move Pipeline to MPS
-            self.pipe.to(self.device)
+            # self.pipe.to(self.device)
+            self.pipe.enable_model_cpu_offload() # It drastically reduces peak VRAM usage
             
-            # B. Enable Attention Slicing (Saves VRAM)
+            # Enable Attention Slicing (Saves VRAM, slightly slower but safer)
             self.pipe.enable_attention_slicing()
             
-            # C. VAE Tiling (Prevents memory spikes during decode)
+            # VAE Tiling (Critical for Float32 VAEs to prevent OOM)
             self.pipe.enable_vae_tiling()
             
-            # Note: We are NOT using cpu_offload here because on some M1s 
-            # with standard SD 1.5, simple attention slicing + float32 is usually enough 
-            # if we don't hold gradients.
         else:
             self.device = "cpu"
             self.pipe.to("cpu")
@@ -80,7 +77,7 @@ class SketchToRenderEngine:
         controlnet_conditioning_scale = float(controlnet_conditioning_scale)
 
         # Inference
-        # We rely on the pipeline's internal handling now that we are pure Float32
+        # Relying on the pipeline's internal handling now that it's  pure Float32
         with torch.inference_mode():
             output = self.pipe(
                 prompt=prompt,
