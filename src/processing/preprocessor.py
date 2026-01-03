@@ -40,15 +40,12 @@ class Preprocessor:
         """
         img_array = np.array(image)
         
-        # 1. Edge Detection
-        # Since the user draws black lines on white, we can actually just 
-        # invert it to get "white lines on black" which ControlNet often prefers, 
-        # OR just run Canny on the drawing.
-        
-        # Let's stick to Canny as it's the standard for the Canny ControlNet
+        # 1. Invert the image
+        img_array = 255 - img_array
+        # 2. Edge Detection (on the inverted image)
         canny = cv2.Canny(img_array, 100, 200)
         
-        # 2. Format for ControlNet (H, W, 3)
+        # 3. Format for ControlNet (H, W, 3)
         canny = canny[:, :, None]
         canny = np.concatenate([canny, canny, canny], axis=2)
         
