@@ -3,10 +3,12 @@ from diffusers import (
     StableDiffusionControlNetPipeline, 
     ControlNetModel, 
     LCMScheduler,
+    AutoencoderTiny,
     AutoencoderKL
 )
 from PIL import Image
 import yaml
+import gc
 
 class SketchToRenderEngine:
     def __init__(self, config_path: str):
@@ -14,40 +16,49 @@ class SketchToRenderEngine:
             self.config = yaml.safe_load(f)
             
         print("Initializing engine...")
+        self.dtype = torch.float32 # Force Float32 for Mac stability
         
-        # 1. Force Float32 for Stability on macOS < 14.0
-        # As Float16 is unstable on my macOS < 14.0 OS version without NaNs.
-        self.dtype = torch.float32
-        
-        # 2. Load ControlNet
-        print("Loading ControlNet...")
+        # 1. Load ControlNet (Scribble)
+        print("Loading ControlNet (Scribble)...")
         self.controlnet = ControlNetModel.from_pretrained(
             self.config['pipeline']['controlnet_model'], 
             torch_dtype=self.dtype
         )
         
+        # 2. Load TinyVAE (TAESD)
+        try:
+            vae = AutoencoderTiny.from_pretrained("madebyollin/taesd", torch_dtype=self.dtype)
+            print("** TinyVAE Loaded.")
+        except:
+            print("!! TinyVAE Failed. Using heavy VAE.")
+            base_model_id = self.config['pipeline']['base_model']
+            vae = AutoencoderKL.from_pretrained(base_model_id, subfolder="vae", torch_dtype=self.dtype)
+
         # 3. Load Main Pipeline
         print("Loading Stable Diffusion...")
         base_model_id = self.config['pipeline']['base_model']
         self.pipe = StableDiffusionControlNetPipeline.from_pretrained(
             base_model_id,
             controlnet=self.controlnet,
+            vae=vae,
             torch_dtype=self.dtype,
             safety_checker=None
         )
 
-        # 4. MEMORY OPTIMIZATION STRATEGY (Fix for slower memory swapping)
+        # 4. HYBRID MEMORY STRATEGY
         if torch.backends.mps.is_available():
             self.device = "mps"
-            print("Mac Silicon Detected. Applying Smart Offloading...")
+            print("** Device: MPS. Applying Hybrid Memory Strategy for CPU Offloading...")
             
-            # self.pipe.to(self.device)
-            self.pipe.enable_model_cpu_offload() # It drastically reduces peak VRAM usage
+            # Move heavy compute models to GPU
+            self.pipe.unet.to("mps")
+            self.pipe.controlnet.to("mps")
+            self.pipe.vae.to("mps")
             
-            # Enable Attention Slicing (Saves VRAM, slightly slower but safer)
+            # Keep Text Encoder on CPU (Saves VRAM)
+            self.pipe.text_encoder.to("cpu")
+            
             self.pipe.enable_attention_slicing()
-            
-            # VAE Tiling (Critical for Float32 VAEs to prevent OOM)
             self.pipe.enable_vae_tiling()
             
         else:
@@ -56,7 +67,6 @@ class SketchToRenderEngine:
         
         # 5. LCM Distillation
         if self.config['pipeline'].get('distillation_type') == "lcm":
-            print("⚡ Loading LCM-LoRA...")
             self.pipe.load_lora_weights(self.config['pipeline']['lcm_lora_id'])
             self.pipe.scheduler = LCMScheduler.from_config(self.pipe.scheduler.config)
 
@@ -65,27 +75,47 @@ class SketchToRenderEngine:
         prompt: str, 
         negative_prompt: str, 
         control_image: Image.Image,
-        num_inference_steps: int = 4,
+        num_inference_steps: int = 4, 
         guidance_scale: float = 1.0,
         controlnet_conditioning_scale: float = 1.0
     ) -> Image.Image:
         
-        generator = torch.Generator(device=self.device).manual_seed(42)
-        
-        # Standardize inputs
-        guidance_scale = float(guidance_scale)
-        controlnet_conditioning_scale = float(controlnet_conditioning_scale)
+        # 1. Clean Memory
+        if self.device == "mps":
+            torch.mps.empty_cache()
+            gc.collect()
 
-        # Inference
-        # Relying on the pipeline's internal handling now that it's  pure Float32
+        generator = torch.Generator(device="cpu").manual_seed(42)
+        
+        # 2. Determine Classifier Free Guidance
+        # If guidance_scale > 1.0, we NEED negative embeddings.
+        do_classifier_free_guidance = guidance_scale > 1.0
+        
+        # 3. Manual Encoding (Hybrid Mode - CPU ONLY)
+        with torch.no_grad():
+            prompt_embeds, negative_embeds = self.pipe.encode_prompt(
+                prompt, 
+                "cpu", # Force CPU encoding
+                1, 
+                do_classifier_free_guidance, # Dynamic boolean (Fixes the logic error)
+                negative_prompt
+            )
+
+        # 4. Move Embeddings to MPS (If they exist)
+        if self.device == "mps":
+            prompt_embeds = prompt_embeds.to("mps")
+            if negative_embeds is not None:
+                negative_embeds = negative_embeds.to("mps") # Fixes the NoneType crash
+
+        # 5. Inference
         with torch.inference_mode():
             output = self.pipe(
-                prompt=prompt,
-                negative_prompt=negative_prompt,
+                prompt_embeds=prompt_embeds, 
+                negative_prompt_embeds=negative_embeds,
                 image=control_image,
                 num_inference_steps=num_inference_steps,
-                guidance_scale=guidance_scale,
-                controlnet_conditioning_scale=controlnet_conditioning_scale,
+                guidance_scale=float(guidance_scale),
+                controlnet_conditioning_scale=float(controlnet_conditioning_scale),
                 generator=generator
             )
             
