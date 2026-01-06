@@ -1,61 +1,110 @@
 import torch
 import os
-import coremltools as ct
-from diffusers import StableDiffusionControlNetPipeline, ControlNetModel
-import argparse
+import shutil
+import sys
+import subprocess
+import glob
+from diffusers import StableDiffusionPipeline
 
-def compile_unet_to_coreml(model_id, controlnet_id, output_dir="models/coreml"):
+def rename_models(output_dir):
     """
-    Compiles the UNet part of the pipeline to Core ML.
-    This is a simplified version; full pipeline conversion is best done 
-    via the apple/ml-stable-diffusion repository.
+    Cleans up the messy auto-generated filenames from Apple's script.
     """
-    print(f"Loading weights from {model_id}...")
+    print("\n[3/3] Renaming models to standard format...")
+    replacements = {
+        "vae_decoder": "VAEDecoder.mlpackage",
+        "vae_encoder": "VAEEncoder.mlpackage",
+        "text_encoder": "TextEncoder.mlpackage",
+        "controlnet": "ControlNet.mlpackage",
+    }
+    
+    # Handle UNet chunks specifically
+    for file_path in glob.glob(os.path.join(output_dir, "*.mlpackage")):
+        filename = os.path.basename(file_path)
+        
+        # Rename standard components
+        for key, new_name in replacements.items():
+            if key in filename and "unet" not in filename: # Avoid confusion
+                new_path = os.path.join(output_dir, new_name)
+                if os.path.exists(new_path): shutil.rmtree(new_path)
+                os.rename(file_path, new_path)
+                print(f"   ↳ Renamed {filename} -> {new_name}")
+
+        # Rename UNet Chunks
+        if "unet_chunk1" in filename:
+            new_path = os.path.join(output_dir, "UnetChunk1.mlpackage")
+            if os.path.exists(new_path): shutil.rmtree(new_path)
+            os.rename(file_path, new_path)
+            print(f"   ↳ Renamed {filename} -> UnetChunk1.mlpackage")
+            
+        elif "unet_chunk2" in filename:
+            new_path = os.path.join(output_dir, "UnetChunk2.mlpackage")
+            if os.path.exists(new_path): shutil.rmtree(new_path)
+            os.rename(file_path, new_path)
+            print(f"   ↳ Renamed {filename} -> UnetChunk2.mlpackage")
+
+def fuse_and_compile(base_model_id, controlnet_id, lcm_lora_id, output_dir="models/coreml"):
+    print(f"** Starting CoreML Compilation Pipeline...")
+    
+    # --- STEP 1: LOAD & FUSE ---
+    print("\n[1/3] Loading and Fusing Weights...")
+    pipe = StableDiffusionPipeline.from_pretrained(base_model_id, torch_dtype=torch.float32)
+    print("   ↳ Merging LCM-LoRA into UNet...")
+    pipe.load_lora_weights(lcm_lora_id)
+    pipe.fuse_lora(lora_scale=1.0)
+    pipe.unload_lora_weights()
+    
+    temp_model_path = os.path.abspath("temp_fused_model")
+    if os.path.exists(temp_model_path): shutil.rmtree(temp_model_path)
+    pipe.save_pretrained(temp_model_path, safe_serialization=True)
+    print(f"   ↳ Fused model saved to {temp_model_path}")
+
+    # --- STEP 2: CONVERT VIA CLI (TWO PASSES) ---
+    print("\n[2/3] Running Apple CoreML Converter (Multi-Pass)...")
     os.makedirs(output_dir, exist_ok=True)
     
-    # Load model
-    pipe = StableDiffusionControlNetPipeline.from_pretrained(
-        model_id, 
-        controlnet=ControlNetModel.from_pretrained(controlnet_id),
-        torch_dtype=torch.float32
-    )
+    # PASS A: Convert Fused UNet + VAEs + Text Encoder
+    # skipping ControlNet here to avoid the version mismatch error
+    print("   ↳ Pass A: Converting Fused UNet, VAE, Text Encoder...")
+    cmd_base = [
+        sys.executable, "-m", "python_coreml_stable_diffusion.torch2coreml",
+        "-o", output_dir,
+        "--latent-h", "64", "--latent-w", "64",
+        "--attention-implementation", "SPLIT_EINSUM",
+        "--compute-unit", "ALL",
+        "--quantize-nbits", "6",
+        "--chunk-unet",
+        "--unet-support-controlnet", # imp: prepares UNet input ports
+        "--convert-unet", 
+        "--convert-text-encoder", 
+        "--convert-vae-decoder", 
+        "--convert-vae-encoder",
+        "--model-version", temp_model_path # Use local fused model
+    ]
+    subprocess.check_call(cmd_base)
 
-    unet = pipe.unet
-    unet.eval()
+    # PASS B: Convert ControlNet Separately
+    # Using the standard repo ID here to satisfy the sanity check
+    print("\n   ↳ Pass B: Converting ControlNet...")
+    cmd_control = [
+        sys.executable, "-m", "python_coreml_stable_diffusion.torch2coreml",
+        "-o", output_dir,
+        "--compute-unit", "ALL",
+        "--quantize-nbits", "6",
+        "--convert-controlnet", controlnet_id,
+        "--model-version", base_model_id # Use Standard ID (e.g. runwayml/...)
+    ]
+    subprocess.check_call(cmd_control)
 
-    # Pre-processing for Core ML
-    # We need dummy inputs
-    sample_size = unet.config.sample_size
-    in_channels = unet.config.in_channels
-    dummy_input = torch.randn(1, in_channels, sample_size, sample_size)
-    timestep = torch.tensor([1.0])
-    encoder_hidden_states = torch.randn(1, 77, 768)
-    control_states = [torch.randn(1, 320, 64, 64)] * 13 # Dummy ControlNet outputs
-
-    print("Tracing UNet (this may take a while)...")
-    # Tracing is required for Core ML conversion
-    # Note: This is an illustrative trace; actual implementation requires 
-    # handling ControlNet conditioning inputs correctly.
+    # --- STEP 3: RENAME ---
+    rename_models(output_dir)
     
-    # traced_model = torch.jit.trace(unet, (dummy_input, timestep, encoder_hidden_states))
-    
-    print("Core ML conversion initiated...")
-    # model = ct.convert(
-    #     traced_model,
-    #     inputs=[ct.TensorType(name="sample", shape=dummy_input.shape)],
-    #     convert_to="mlprogram"
-    # )
-    # model.save(os.path.join(output_dir, "UNet.mlpackage"))
-    
-    print("\n--- Phase III: Optimization Tip ---")
-    print("For the most efficient ANE (Apple Neural Engine) execution, use:")
-    print("python -m python_coreml_stable_diffusion.pipeline --convert-unet --convert-vae --convert-text-encoder --model-version " + model_id + " -o " + output_dir)
-    print("------------------------------------\n")
+    # Cleanup
+    if os.path.exists(temp_model_path): shutil.rmtree(temp_model_path)
+    print(f"\n** SUCCESS!! All models compiled and renamed in {output_dir}")
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--model", default="runwayml/stable-diffusion-v1-5")
-    parser.add_argument("--controlnet", default="lllyasviel/sd-controlnet-canny")
-    args = parser.parse_args()
-    
-    compile_unet_to_coreml(args.model, args.controlnet)
+    BASE = "runwayml/stable-diffusion-v1-5"
+    CONTROL = "lllyasviel/sd-controlnet-scribble"
+    LCM = "latent-consistency/lcm-lora-sdv1-5"
+    fuse_and_compile(BASE, CONTROL, LCM)
