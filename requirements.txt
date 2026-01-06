@@ -1,12 +1,27 @@
-torch>=2.4.0
-torchvision>=0.19.0
-diffusers>=0.31.0
-transformers>=4.45.0
-accelerate>=0.34.0
-opencv-python>=4.10.0
-gradio>=5.0.0
-peft>=0.12.0
-numpy>=1.26.4,<2.0.0
-pyyaml>=6.0.1
-Pillow>=10.4.0
-controlnet-aux>=0.0.9
+# Core Frameworks (for CoreML Stability)
+torch==2.5.1
+torchvision==0.20.1
+
+# Apple's Hard Requirement 
+numpy==1.23.5
+
+# --- Diffusers Stack for coreml-stable-diffusion v1.1.0
+diffusers==0.30.2
+transformers==4.44.2
+accelerate>=0.30.0
+huggingface-hub==0.24.6
+
+# --- Utilities ---
+opencv-python
+Pillow
+pyyaml
+scikit-learn
+controlnet-aux
+peft>=0.7.0
+
+# --- CoreML Tools ---
+coremltools>=7.2
+git+https://github.com/apple/ml-stable-diffusion.git
+
+# UI 
+gradio==4.44.1 # stable with the older Numpy 1.23.5
