@@ -1,18 +1,18 @@
-# Sketch-to-Render: Real-Time Automotive Design Studio
+# ⛩️ Sketch-to-Render AI: Real-Time Sketch/Design Studio powered by Stable Diffusion
 
 ## 1. Introduction
-The Real-Time Automotive Design Studio is a generative AI pipeline designed to transform rough automotive sketches into high-fidelity, photorealistic 3D renders in real-time. Unlike standard generation tools, this project focuses heavily on inference optimization.
+The Real-Time Automotive Design Studio is a generative AI pipeline designed to transform rough sketches into high-fidelity, photorealistic 3D renders in real-time. Unlike standard generation tools, this project this project prioritizes **inference latency** and **edge deployment**.
 
-The goal is to move beyond static "prompt-and-wait" workflows to an interactive "paint-and-see" experience, allowing designers to visualize concepts instantly as they sketch. This project bridges the gap between high-control Generative AI (ControlNet) and edge-ready deployment (TensorRT/Quantization).
+The goal is to move beyond static "prompt-and-wait" workflows to an interactive "paint-and-see" experience, allowing designers to visualize concepts instantly as they sketch. This project bridges the gap between high-control Generative AI (ControlNet) and hardware-accelerated edge deployment (CoreML/ANE).
 
 ## 2. Objective
-Core Utility: Translate low-detail Canny/Scribble inputs into specific automotive design languages (e.g., Porsche/Audi styles) using Fine-tuned LoRAs.
+Core Utility: Translate low-detail Canny/Scribble inputs into specific design languages (e.g., Porsche/Audi styles) using Fine-tuned LoRAs.
 
 Engineering Goal 1 (Control): Implement strict structural guidance using ControlNet to respect the designer's original lines.
 
 Engineering Goal 2 (Speed): Reduce inference latency from ~4s (standard SDXL) to <100ms to enable real-time interactivity.
 
-Engineering Goal 3 (Efficiency): Optimize memory footprint via Quantization (INT8/FP8) to allow deployment on consumer-grade GPUs.
+Engineering Goal 3 (Efficiency): Optimize memory footprint via **6-bit Quantization** to allow the full pipeline to run on constrained hardware (e.g., MacBook Air 8GB) without swapping.
 
 
 ## 3. Methodology & Architecture
@@ -20,69 +20,92 @@ Engineering Goal 3 (Efficiency): Optimize memory footprint via Quantization (INT
 ```mermaid
 graph LR
     User["User Sketch"] --> UI["Gradio Frontend"]
-    UI --> Prep["OpenCV Preprocessor<br/>(Canny/Scribble)"]
-    Prep --> Engine["Sketch-to-Render Engine"]
+    UI --> Prep["OpenCV Preprocessor<br/>(Scribble/Canny)"]
     
-    subgraph Engine["Sketch-to-Render Engine"]
+    subgraph "Hybrid Deployment System"
         direction TB
-        CN["ControlNet"]
-        SD["Stable Diffusion UNet"]
-        LoRA["Design LoRAs"]
-        LCM["LCM Scheduler"]
+        HF["Hugging Face Hub<br/>(Model Weights)"] -.->|Auto-Download| Engine
         
-        CN --> SD
-        LoRA --> SD
-        LCM --> SD
+        subgraph Engine["CoreML Engine (ANE Accelerated)"]
+            direction TB
+            Input["Resized Input (512x512)"]
+            CN["ControlNet (6-bit)"]
+            UNet["Fused LCM UNet (6-bit)"]
+            VAE["TinyVAE / VAE"]
+            
+            Input --> CN
+            Input --> UNet
+            CN --> UNet
+            UNet --> VAE
+        end
     end
     
+    Prep --> Engine
     Engine --> Output["Photorealistic Render"]
-    Output --> UI
-    
-    subgraph "Optimization Layer"
-        TRT["TensorRT Compilation"]
-        Quant["INT8 Quantization"]
-    end
-    
-    SD -.-> TRT
-    TRT -.-> Quant
+    Output --> GradioUI
 ```
 
 This project follows a three-phase optimization approach:
 
 ### Phase I: Baseline Fidelity (The "Quality" Layer)
-Model: Stable Diffusion XL (SDXL) or SD 1.5 (depending on VRAM constraints).
+- Model: Stable Diffusion 1.5 (Chosen for optimal speed/quality trade-off on edge devices).
 
-Control: ControlNet Canny/Scribble. We intercept the U-Net's down-sampling blocks to inject spatial guidance from the user's sketch.
+- Control: ControlNet Canny/Scribble. We intercept the U-Net's down-sampling blocks to inject spatial guidance from the user's sketch.
 
-Style: Custom trained LoRA (Low-Rank Adaptation) on specific car manufacturer datasets to bias the generation toward specific design DNAs (e.g., headlights, aerodynamics).
+- Style: Custom trained LoRA (Low-Rank Adaptation) to bias generation toward specific design DNAs (e.g., "Vintage," "Cyberpunk") without prompt engineering overhead.
 
 ### Phase II: Step Distillation (The "Speed" Layer)
+- Technique: Replaced the standard scheduler with LCM (Latent Consistency Models).
 
-Technique: Replaced the standard scheduler with LCM (Latent Consistency Models) or SDXL Turbo.
-Impact: Reduces the required denoising steps from 50 $\rightarrow$ 2-4 steps.
-Mathematics: Utilizes Probability Flow ODEs to predict the final sample trajectory in a single step, bypassing the iterative Markov chain of standard diffusion.
+- Impact: Reduces required denoising steps from 50 to 2-4 steps.
 
-### Phase III: Graph Compilation & Quantization (The "Edge" Layer)
-Compilation: Integrating NVIDIA TensorRT to compile the U-Net and VAE into optimized engine plans. This performs layer fusion and kernel auto-tuning specific to the target GPU.
+- Mathematics: Utilizes Probability Flow ODEs to predict the final sample trajectory rapidly (in a single step), bypassing the iterative Markov chain of standard diffusion.
 
-Quantization: Shift from FP16 to INT8 (Post-Training Quantization) for the U-Net, significantly increasing throughput and reducing VRAM usage with minimal perplexity degradation.
+### Phase III: Edge Optimization (The "Edge" Layer)
 
-Pipeline: StreamDiffusion or custom pipeline implementation to handle batch-stream inputs for drawing-pad integration.
+This phase ports the pipeline from a flexible PyTorch environment to a strict, high-performance execution graph for Apple Silicon.
+
+1. Fuse-then-Compile Strategy: * Instead of applying LoRA adapters at runtime (which is slow), we mathematically fuse the LCM-LoRA weights into the base UNet before compilation.
+
+- This creates a specialized "LCM-Native" model that requires no extra compute for the LoRA steps.
+
+2. CoreML Compilation: * Conversion of the UNet, VAE, and ControlNet to .mlpackage format.
+
+- Result: Runs on the Apple Neural Engine (ANE), bypassing the GPU/CPU bottleneck.
+
+3. Deep Quantization:
+
+- Applied 6-bit Quantization to weights.
+
+- Impact: Reduces model size from ~4GB to <1.5GB, allowing the entire pipeline to reside in the Neural Engine cache on an 8GB MacBook Air, eliminating SSD swap latency.
+
+4. Latency Engineering:
+
+- Replaced the standard pipeline with a custom Static Compute Graph execution loop to minimize Python GIL overhead.
+
+- Adopted TinyVAE (TAESD) in place of Standard VAE for the optimal fidelity-latency trade-off during the decoding stage.
 
 
 ## 4. Tech Stack
-**Deep Learning & Computer Vision Framework**: PyTorch 2.x, OpenCV
+**Deep Learning & Computer Vision**: PyTorch 2.x, OpenCV
 
-**Diffusion Library**: Hugging Face diffusers (Pipeline orchestration)
+**Diffusion/Generative Engine**: 
+- HuggingFace diffusers (Pipeline orchestration) and diffusers(Apple silicon native)
+- LCM-LoRA (Latent Consistency Models for 4-step inference)
 
-**Optimization**: 
 
-- TensorRT (NVIDIA Inference Accelerator)
+**Edge Optimization & Deployment**:
 
-- Olive (Microsoft Model Optimization) or AutoGPTQ
+- coremltools & python_coreml_stable_diffusion (Apple Silicon Compilation)
 
-- PEFT (For LoRA loading)
+- optimum-quanto (Quantization primitives)
 
-**Frontend/UI**: Gradio (with Realtime sketching canvas capabilities) or Streamlit.
+- PEFT (Parameter-Efficient Fine-Tuning loading)
 
-**MLOps(Experiment Tracking)**: Weights & Biases (W&B) for logging inference metrics (latency vs. FID)
+- TensorRT (NVIDIA Optimization - Planned)
+
+**Frontend/UI**: 
+Gradio (Reactive UI with Realtime canvas state management).
+
+**MLOps(Experiment Tracking)**: 
+Weights & Biases (W&B) for tracking inference latency, VRAM usage, and FID scores across optimization techniques.
