@@ -8,8 +8,21 @@ import time
 from PIL import Image, ImageOps
 
 # --- INITIALIZE COREML ENGINE ---
-# We no longer need the YAML config because CoreML models are self-contained.
+# YAML config not required because CoreML models are self-contained.
 engine = CoreMLEngine(model_dir="models/coreml")
+
+
+# --- ENGINE SELECTION for Hugging Face Space. Commented out here as this script will serve Apple hardware optimization(ANE) ---
+# try:
+#     from src.engine.cuda_optimized_engine import CUDAOptimizedEngine
+#     # This will fail locally on your Mac (No CUDA), catching the error automatically
+#     engine = CUDAOptimizedEngine()
+# except (ImportError, RuntimeError) as e:
+#     print(f" !! Could not load CUDA Engine ({e}). Falling back to Universal Selector...")
+#     from src.engine.engine_selector import get_engine
+#     engine = get_engine()
+
+
 preprocessor = Preprocessor()
 
 def process_sketch(sketch_data, prompt, neg_prompt, steps, guidance, control_scale, style_choice):
@@ -25,7 +38,7 @@ def process_sketch(sketch_data, prompt, neg_prompt, steps, guidance, control_sca
     start_time = time.time()
     
     # --- 2. Preprocessing (Standardize Size/Mode) ---
-    # This likely handles resizing to 512x512 and basic RGBA conversion
+    # This handles resizing to 512x512 and basic RGBA conversion
     control_image = preprocessor.process_sketch_input(sketch_raw)
     
     # --- 3. CRITICAL ACCURACY FIX: Invert Colors ---
@@ -46,7 +59,8 @@ def process_sketch(sketch_data, prompt, neg_prompt, steps, guidance, control_sca
         "Minimalist": "modern minimalist design, clean lines, white studio background, 8k, architectural digest style",
         "Cyberpunk": "cyberpunk automotive, neon lights, night city background, rain reflections, futuristic, glowing",
         "Vintage": "vintage classic car, 1960s style, film grain, warm Kodak portra colors, retro poster aesthetic",
-        "Sketch": "highly detailed pencil sketch, technical drawing, blueprint style, white lines on blue paper"
+        "Sketch": "highly detailed pencil sketch, technical drawing, blueprint style, white lines on blue paper",
+        "Hyper-Gloss": "professional automotive studio photography, 3-point lighting, dramatic shadows, 8k resolution, metallic paint, highly reflective surface, unreal engine 5 render"
     }
     # Add style to prompt if not 'None' or empty
     style_suffix = styles.get(style_choice, "")
