@@ -3,69 +3,70 @@ import os
 from diffusers import StableDiffusionControlNetPipeline, ControlNetModel, LCMScheduler
 from PIL import Image
 
-# --- ZeroGPU Compatibility ---
-# Hugging Face ZeroGPU uses the 'spaces' library.
-# If running locally, this import fails, so we create a dummy wrapper.
+# --- ZEROGPU SETUP ---
 try:
     import spaces
+    print("   ✅ ZeroGPU Library Active")
 except ImportError:
+    # Local fallback
     class spaces:
         @staticmethod
-        def GPU(func):
-            return func
+        def GPU(*args, **kwargs):
+            def decorator(func):
+                return func
+            return decorator
 
 class PyTorchEngine:
     def __init__(self):
-        print("🚀 Initializing Universal PyTorch Engine...")
+        print("** Initializing Pro Engine (ZeroGPU Ready)...")
         
-        # 1. Hardware Detection
-        # Priority: CUDA (Cloud GPU) > MPS (Mac GPU) > CPU (Fallback)
-        if torch.cuda.is_available():
-            self.device = "cuda"
-            self.dtype = torch.float16
-        elif torch.backends.mps.is_available():
-            self.device = "mps"
-            self.dtype = torch.float32
-        else:
-            self.device = "cpu"
-            self.dtype = torch.float32
-            
-        print(f"   ↳ Active Device: {self.device.upper()} | Precision: {self.dtype}")
-
-        # 2. Load Models (Automatic Download from HF Cache)
-        print("   ↳ Loading ControlNet...")
+        # 1. Determine Precision
+        # We use Float16 for speed on GPU, but we must be careful with the VAE.
+        self.dtype = torch.float16 if torch.cuda.is_available() else torch.float32
+        
+        # 2. Load Models
+        print("   ** Loading ControlNet...")
         controlnet = ControlNetModel.from_pretrained(
             "lllyasviel/sd-controlnet-scribble", 
             torch_dtype=self.dtype
         )
         
-        print("   ↳ Loading Stable Diffusion...")
+        print("   ** Loading Stable Diffusion...")
         self.pipe = StableDiffusionControlNetPipeline.from_pretrained(
             "runwayml/stable-diffusion-v1-5",
             controlnet=controlnet,
-            safety_checker=None,
+            safety_checker=None, # Disable safety checker to prevent false positives
             torch_dtype=self.dtype
-        ).to(self.device)
+        )
         
-        # 3. Apply LCM (Latent Consistency Model) for Speed
-        print("   ↳ Injecting LCM Scheduler...")
+        # 3. CRITICAL FIX: FORCE VAE TO FLOAT32
+        # SD v1.5 VAE cracks in Float16, producing black/grey images.
+        # Forcing the VAE (Decoder) to keep full precision.
+        print("   !! Forcing VAE to Float32 to prevent black images...")
+        self.pipe.vae = self.pipe.vae.to(dtype=torch.float32)
+        
+        # 4. Inject LCM
         self.pipe.scheduler = LCMScheduler.from_config(self.pipe.scheduler.config)
         self.pipe.load_lora_weights("latent-consistency/lcm-lora-sdv1-5")
         
-        print("   ✅ PyTorch Engine Ready.")
+        print("   ✅ Engine Loaded.")
         
-    # Decorate with @spaces.GPU for free GPU on Hugging Face
+    # 5. ZeroGPU Execution
     @spaces.GPU(duration=60) 
     def generate(self, prompt, negative_prompt, control_image, steps=4, guidance=1.0, control_scale=1.0):
-        # Resize inputs to 512x512
+        # Move pipeline to GPU (The decorator ensures we have one)
+        if torch.cuda.is_available():
+            self.pipe.to("cuda")
+            # Ensure VAE stays in Float32 even after moving to CUDA
+            self.pipe.vae.to(dtype=torch.float32)
+            
+        # Preprocess
         if control_image.size != (512, 512):
             control_image = control_image.resize((512, 512), Image.LANCZOS)
-            
-        # Ensure RGB
         if control_image.mode != "RGB":
             control_image = control_image.convert("RGB")
 
-        # Run Inference
+        print("   <> Generating...")
         result = self.pipe(
             prompt=prompt,
             negative_prompt=negative_prompt,
