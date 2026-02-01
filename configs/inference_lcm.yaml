@@ -1,13 +1,14 @@
 pipeline:
   base_model: "runwayml/stable-diffusion-v1-5"
-  controlnet_model: "lllyasviel/sd-controlnet-canny"
+  controlnet_model: "lllyasviel/sd-controlnet-scribble"
   lcm_lora_id: "latent-consistency/lcm-lora-sdv1-5"
-  device: "mps" # Optimized for Mac
+  device: "mps" 
+  distillation_type: "lcm" # Options: none, lcm, turbo
   num_inference_steps: 4
   guidance_scale: 1.0 # Standard for LCM
 
 ui:
-  title: "Sketch-to-Render: Automotive Design Studio"
+  title: "Sketch-to-Render AI: Design Studio"
   theme: "dark"
-  default_prompt: "High-fidelity rendering of a futuristic Porsche sportscar, aerodynamic curves, dramatic lighting, photorealistic, 8k"
+  default_prompt: "High-fidelity rendering of rough sketches into photorealistic images"
   negative_prompt: "low quality, blurry, distorted, messy lines"
