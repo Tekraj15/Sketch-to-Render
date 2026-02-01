@@ -1,0 +1,67 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environment
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Project Specific - Data & Assets
+# Ignore downloaded images in assets
+assets/*.jpg
+assets/*.jpeg
+assets/*.JPG
+assets/*.JPEG
+
+# Ignore the downloaded dataset folder
+assets/image-dataset/
+
+
+# Ignore generated embeddings and metadata
+data/embeddings.npy
+data/metadata.json
+
+# Ignore Pinecone/API keys if stored in files (though .env covers this)
+*.npy
+*.json
+!package.json
+!tsconfig.json
+# Keep the data directory structure but ignore contents (except .keep if we had one)
+# For now, ignoring the specific generated files is safer to avoid ignoring config jsons if any appear later.
