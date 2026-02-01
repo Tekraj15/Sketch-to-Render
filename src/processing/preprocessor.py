@@ -1,21 +1,18 @@
-import cv2
 import numpy as np
-from PIL import Image, ImageOps
+from PIL import Image
 
 class Preprocessor:
     def process_sketch_input(self, sketch_input) -> Image.Image:
         """
-        Handles Gradio input and converts to a clean RGB image.
+        Handles Gradio input and returns a PIL Image with
+        BLACK lines on a WHITE background.
         """
-        if sketch_input is None:
-            return None
-
-        # Handle Dict input from new Gradio versions
+        if sketch_input is None: return None
+        
+        # Gradio Dict handling
         if isinstance(sketch_input, dict):
             sketch_input = sketch_input.get("composite", None)
-        
-        if sketch_input is None:
-            return None
+        if sketch_input is None: return None
             
         # Convert to PIL
         if isinstance(sketch_input, np.ndarray):
@@ -23,7 +20,8 @@ class Preprocessor:
         else:
             image = sketch_input
 
-        # Handle Alpha Channel (Transparency) -> White Background
+        # Handle Transparency -> White Background
+        # This ensures we have a solid white sheet with black lines
         if image.mode != 'RGB':
             background = Image.new("RGB", image.size, (255, 255, 255))
             if image.mode == 'RGBA':
@@ -36,17 +34,12 @@ class Preprocessor:
 
     def get_canny(self, image: Image.Image) -> Image.Image:
         """
-        Processes the sketch for ControlNet.
+        PREPARES IMAGE FOR CONTROLNET SCRIBBLE
+        
+        CRITICAL CHANGE:
+        We do NOT invert colors anymore.
+        ControlNet Scribble expects: BLACK lines on WHITE background.
         """
-        img_array = np.array(image)
-        
-        # 1. Invert the image
-        img_array = 255 - img_array
-        # 2. Edge Detection (on the inverted image)
-        canny = cv2.Canny(img_array, 100, 200)
-        
-        # 3. Format for ControlNet (H, W, 3)
-        canny = canny[:, :, None]
-        canny = np.concatenate([canny, canny, canny], axis=2)
-        
-        return Image.fromarray(canny)
+        # We simply return the cleaned "Black-on-White" image.
+        # No inversion (255 - img) needed.
+        return image
