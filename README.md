@@ -113,13 +113,15 @@ Weights & Biases (W&B) for tracking inference latency, VRAM usage, and FID score
 
 ## 5. Results & Performance Benchmarks
 
-### 5.1 Qualitative Results
-
-(Insert high-quality comparison images here)
+### 5.1 Image Rendering Result and Inference Speeds
+i. Inference Speed on Local Machine(ANE)- avg 48sec
 
 ![Inference Speed on Local Machine(ANE)- avg 48sec](assets/sketch-render-red-thar-best-local.png)
 
-![Inference Speed on Edge Optimized Pipeline - avg 6.5s] (assets/sketch-render-green-van-hill.png) (assets/girl-on-red-vest.png)
+ii. Inference Speed on Edge Optimized Pipeline - avg 6.5s
+
+![Inference Speed on Edge Optimized Pipeline - avg 6.5s](assets/sketch-render-green-van-hill.png) 
+![Reference Image 2](assets/girl-on-red-vest.png)
 
 ### 5.2 Latency Analysis
 
