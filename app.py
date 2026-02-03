@@ -63,6 +63,21 @@ def process_sketch(sketch_data, prompt, neg_prompt, steps, guidance, control_sca
         "Hyper-Gloss": "professional automotive studio photography, 3-point lighting, dramatic shadows, 8k resolution, metallic paint, highly reflective surface, unreal engine 5 render"
     }
     # Add style to prompt if not 'None' or empty
+    # --- 4. Style Prompt Logic ---
+    styles = {
+        "Minimalist (Arch)": "modern minimalist design, clean lines, white studio background, 8k, architectural digest style",
+        "Cyberpunk (Auto)": "cyberpunk automotive, neon lights, night city background, rain reflections, futuristic, glowing",
+        "Vintage (Auto)": "vintage classic car, 1960s style, film grain, warm Kodak portra colors, retro poster aesthetic",
+        "Sketch": "highly detailed pencil sketch, technical drawing, blueprint style, white lines on blue paper",
+        "Hyper-Gloss": "professional studio photography, 3-point lighting, dramatic shadows, 8k resolution, metallic paint, highly reflective surface, unreal engine 5 render",
+        "Fashion": "high fashion runway photography, elegant clothing design, silk and leather textures, spotlight, vanity fair style",
+        "Urban / City": "bustling metropolis, skyscrapers, wet street level view, cinematic lighting, gotham city vibe",
+        "Nature / Landscape": "national geographic nature photography, majestic mountains, lush forest, golden hour sunlight, dramatic clouds",
+        "Ocean / Beach": "tropical paradise, crystal clear turquoise water, white sand, sunset reflection, cinematic seascape",
+        "Floral": "macro photography of flowers, morning dew, bokeh background, vibrant botanical garden, soft natural light",
+        "Wildlife": "wildlife photography telephoto lens, detailed fur texture, national geographic style, natural habitat"
+    }
+    # Add style to prompt if not 'None' or empty
     style_suffix = styles.get(style_choice, "")
     final_prompt = f"{prompt}, {style_suffix}".strip(", ")
     
@@ -80,7 +95,7 @@ def process_sketch(sketch_data, prompt, neg_prompt, steps, guidance, control_sca
     return output, latency
 
 # --- CSS STYLING ---
-# 1. Buttom and containers
+# 1. Button and containers
 custom_css = """
 #render_btn {
     background: linear-gradient(90deg, #4b6cb7 0%, #182848 100%);
@@ -121,7 +136,7 @@ combined_css = custom_css + cursor_fixes
 with gr.Blocks(title="Sketch-to-Render AI", css=combined_css, theme=gr.themes.Soft()) as demo:
     gr.Markdown("""
     ## **⛩️ Sketch-to-Render AI**
-    ### ***Real-Time Design Studio(mainly for Automotive Design) powered by Stable Diffusion***
+    ### ***Fast Inference Design Studio powered by Stable Diffusion***
     """)
     
     with gr.Row():
@@ -142,8 +157,20 @@ with gr.Blocks(title="Sketch-to-Render AI", css=combined_css, theme=gr.themes.So
             with gr.Group():
                 gr.Markdown("### 2. Style DNA")
                 style_dna = gr.Radio(
-                    choices=["Minimalist", "Cyberpunk", "Vintage", "Sketch"],
-                    value="Minimalist",
+                    choices=[
+                        "Minimalist (Arch)", 
+                        "Cyberpunk (Auto)", 
+                        "Vintage (Auto)", 
+                        "Sketch", 
+                        "Hyper-Gloss",
+                        "Fashion", 
+                        "Urban / City", 
+                        "Nature / Landscape", 
+                        "Ocean / Beach", 
+                        "Floral", 
+                        "Wildlife"
+                    ],
+                    value="Minimalist (Arch)",
                     label="Select Aesthetic"
                 )
                 
