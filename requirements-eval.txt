@@ -1,0 +1,24 @@
+# Scorer dependencies for the evaluation harness (benchmarks/run_eval.py score).
+# Install ON TOP of the app environment (requirements.txt). All of these are additive:
+# they leave the app's pins (numpy 1.23.5, diffusers 0.30.2, transformers 4.44.2,
+# huggingface_hub 0.24.6, timm) untouched. See artifacts/eval-harness-implementation-plan.md (E13-E15).
+#
+#   pip install -r requirements-eval.txt
+#   pip install --no-build-isolation fairscale==0.4.13
+#   pip install --no-build-isolation --no-deps "git+https://github.com/openai/CLIP.git"
+#   pip install --no-deps image-reward==1.5
+#
+# Why the special flags:
+#   - fairscale and openai/CLIP ship only as source and import pkg_resources in setup.py,
+#     which isolated build envs no longer provide (setuptools in the env must still have it).
+#   - image-reward pins timm==0.6.13 (would downgrade timm and risk controlnet_aux), so it is
+#     installed without deps; its `datasets` import is shimmed at load time instead of
+#     installing `datasets`, which would upgrade huggingface_hub past the app's pin.
+#
+# Already provided by the app env and used by the harness: torch, transformers,
+# controlnet_aux (HED), scikit-image, scipy, psutil, pytest, gradio, wandb (optional --wandb).
+
+open_clip_torch==3.3.0
+torchmetrics==1.9.0
+torch-fidelity==0.4.0
+ftfy

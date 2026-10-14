@@ -65,3 +65,10 @@ data/metadata.json
 !tsconfig.json
 # Keep the data directory structure but ignore contents (except .keep if we had one)
 # For now, ignoring the specific generated files is safer to avoid ignoring config jsons if any appear later.
+
+# Evaluation harness outputs (renders, metrics, ratings) -- see eval/sketchbench/README.md
+eval/runs/
+
+# Local model artifacts (compiled Core ML packages, fused-LoRA debug dumps) -- multi-GB, never committed
+models/
+debug_temp_model/

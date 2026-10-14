@@ -1,0 +1,18 @@
+# Edge baseline: CoreML engine with the values the Gradio UI actually sends
+# (steps slider default 4, guidance 1.0 -> CFG off, control_scale forced to 1.0 in app.py).
+name: edge_coreml_app_defaults
+engine:
+  type: coreml
+  options:
+    model_dir: models/coreml
+params:
+  steps: 4
+  guidance: 1.0
+  control_scale: 1.0
+  negative_prompt: "low quality, bad anatomy, blurry"
+control_mode: auto        # app_draw on main; uses the import path once it is merged
+canvas: 512
+seeds: [0, 1, 2, 3]
+warmup: 1
+manifest: eval/sketchbench/manifest.jsonl
+app_path: app.py
