@@ -1,0 +1,18 @@
+# Legacy PyTorch/MPS engine (src/engine/pipeline.py). It hardcodes seed 42, so all
+# seeds render identically (run.json records seed_respected: false).
+name: mps_legacy
+engine:
+  type: mps_legacy
+  options:
+    config_path: configs/inference_lcm.yaml
+params:
+  steps: 4
+  guidance: 1.0
+  control_scale: 1.0
+  negative_prompt: "low quality, bad anatomy, blurry"
+control_mode: auto
+canvas: 512
+seeds: [0]
+warmup: 1
+manifest: eval/sketchbench/manifest.jsonl
+app_path: app.py

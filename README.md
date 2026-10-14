@@ -140,37 +140,57 @@ Weights & Biases (W&B) for tracking inference latency, VRAM usage, and FID score
 
 ## 5. Results & Performance Benchmarks
 
-### 5.1 Image Rendering Result and Inference Speeds
-i. Inference Speed on Local Machine(ANE Optimized using CoreML)- avg ~45sec
-(sampled on 32 sketch to image generations)
+All numbers in this section come from the evaluation harness (`benchmarks/run_eval.py`, see §5.4). Each one traces back to a run directory with its config, git SHA, per-render timings and scores. The earlier figures in this section (FID 18.45, CLIP 0.28, IS 7.21, and the "~48 s → ~6.5 s on M2" table) had no reproducible source in the repo, so they have been replaced. FID in particular isn't meaningful on 32 samples.
 
-![Inference Speed on Local Machine(ANE Optimized using CoreML)- avg 45sec](assets/sketch-render-red-thar-best-local.png)
-![Reference Image 2](assets/red-thar-localrun-best34.png)
+### 5.1 Example renders
 
-ii. Inference Speed on Edge Optimized Pipeline(CUDA and PyTorch ZeroGPU) - avg ~6.5s
-(sampled on 32 sketch to image generations)
+| Local run: CoreML engine on Apple Silicon | Cloud run: CUDA engine on Hugging Face ZeroGPU |
+| :---: | :---: |
+| ![Local CoreML run](assets/sketch-render-red-thar-best-local.png) | ![ZeroGPU run](assets/sketch-render-green-van-hill.png) |
+| ![Local CoreML run 2](assets/red-thar-localrun-best34.png) | ![ZeroGPU run 2](assets/girl-on-red-vest.png) |
 
-![Inference Speed on Edge Optimized Pipeline(CUDA and PyTorch ZeroGPU) - avg 6.5s](assets/sketch-render-green-van-hill.png) 
-![Reference Image 2](assets/girl-on-red-vest.png)
+### 5.2 Latency: edge baseline (CoreML engine, Apple M2, 8 GB RAM)
 
-### 5.2 Latency Analysis
+Measured on SketchBench v0: 13 items × 4 seeds = 52 warm renders at the settings the UI actually sends (4 LCM steps, guidance 1.0, control scale 1.0, 512×512). Run: `20261014-013359_edge_coreml_app_defaults`.
 
-The following benchmarks compare the inference time of the optimized pipeline against the standard Hugging Face implementation on an Apple Silicon M2 chip.
+| Stage (per image) | p50 | Share | Runs on |
+| :--- | :---: | :---: | :--- |
+| **End-to-end** | **27.8 s** (p95 31.3 s) | 100% | |
+| ControlNet (4 calls) | 24.2 s | ~87% | PyTorch fp32 on **CPU** |
+| UNet (4 calls) | 3.2 s | ~12% | Core ML / ANE |
+| VAE decode | 0.3 s | ~1% | Core ML |
+| Text encoder | 0.02 s | <1% | Core ML |
 
-| Metric | Standard Pipeline | Optimized Pipeline | Improvement |
-| :--- | :---: | :---: | :---: |
-| **Inference Time** | ~48s | **~6.5s** | **~8x Faster** |
-| **Model Size** | ~4.2 GB | **~1.4 GB** | **67% Reduction** |
-| **Memory Usage** | ~10 GB | **~4 GB** | **60% Reduction** |
+- Engine load is 96 s and the first (cold) render takes 42.5 s; neither is included above.
+- System swap grew from 3.0 GB to 6.7 GB over the run, so the 8 GB machine is under memory pressure.
+- **Takeaway:** ControlNet still runs in PyTorch on the CPU, and that dominates latency. The compiled `ControlNet.mlpackage` isn't wired into the engine yet. In this compile path the UNet chunks are fp16, not 6-bit. Both are the first items on the Round-2 speed roadmap.
+- **Cloud (ZeroGPU)** hasn't been measured with the harness yet. Run `configs/eval/cloud_cuda_app_defaults.yaml` on a CUDA machine or the Space.
 
-**Note:** The optimized pipeline achieves this speedup by leveraging the Apple Neural Engine (ANE) for computation and 6-bit quantization to reduce memory bandwidth requirements.
+### 5.3 Quality: edge baseline
 
-### 5.3 Quality Analysis
+Mean with 95% bootstrap CI across items; seeds are averaged within each item first.
 
-| Metric | Value |
-| :--- | :---: |
-| **FID Score** | 18.45 |
-| **CLIP Score** | 0.28 |
-| **Inception Score** | 7.21 |
+| Metric | All (13 items) | Scribbles (3) | Real photos (5) | Shaded drawings (4) |
+| :--- | :---: | :---: | :---: | :---: |
+| Structure F1 @3 px (HED) ↑ | 0.285 [0.212, 0.366] | 0.535 | 0.209 | 0.231 |
+| Structure Chamfer, px @512 ↓ | 16.8 [13.4, 20.3] | 8.2 | 21.5 | 16.3 |
+| CLIP-L/14 ×100 vs. user prompt ↑ | 23.3 [21.0, 25.8] | 18.0 | 24.4 | 25.6 |
+| PickScore ↑ | 18.53 [17.90, 19.17] | 18.27 | 18.59 | 18.61 |
+| HPSv2.1 ↑ | 0.208 [0.190, 0.228] | 0.186 | 0.216 | 0.224 |
+| ImageReward ↑ | −0.74 [−1.22, −0.20] | −1.57 | −0.42 | −0.42 |
+| DINOv2 similarity to reference photo ↑ | 0.398 [0.265, 0.537] | — | 0.381 | 0.420 |
 
-**Note:** The FID score of 18.45 indicates high-quality image generation, competitive with standard Stable Diffusion 1.5 models.
+- Canvas scribbles are followed well (F1 0.54).
+- Uploaded photos and shaded drawings are not. On `main` they go through the draw path, which only inverts the image. The model therefore gets a dense, inverted photo instead of an edge map and largely ignores the structure. The single paper-photo item scores F1 0.13: its airplane disappears entirely. This is the baseline for the import-sketch feature.
+- Negative ImageReward and modest HPS scores are consistent with the flat, illustrative look of 4-step LCM-LoRA on base SD 1.5.
+
+### 5.4 Reproducing these numbers
+
+```bash
+# Use the app environment, plus the scorer extras in requirements-eval.txt
+python benchmarks/run_eval.py generate --config configs/eval/edge_coreml_app_defaults.yaml
+python benchmarks/run_eval.py score --run eval/runs/<run_dir>          # writes report.md + grid.png
+python benchmarks/ab_rater.py --run-a eval/runs/<A> --run-b eval/runs/<B> --rater <name>   # blind human A/B
+```
+
+SketchBench, its data policy and how to add items are described in [`eval/sketchbench/README.md`](eval/sketchbench/README.md).

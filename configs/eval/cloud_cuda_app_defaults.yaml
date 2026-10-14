@@ -1,0 +1,17 @@
+# Cloud baseline: CUDAOptimizedEngine with the UI's effective values (run on a CUDA GPU / the Space).
+# Note: on ZeroGPU, @spaces.GPU runs generate() in a forked worker, so per-component timers
+# do not propagate back; only end-to-end latency is reliable there.
+name: cloud_cuda_app_defaults
+engine:
+  type: cuda
+params:
+  steps: 4
+  guidance: 1.0
+  control_scale: 1.0
+  negative_prompt: "low quality, bad anatomy, blurry"
+control_mode: auto
+canvas: 512
+seeds: [0, 1, 2, 3]
+warmup: 1
+manifest: eval/sketchbench/manifest.jsonl
+app_path: app.py
