@@ -1,18 +1,151 @@
+import inspect
 import os
 import torch
 import torch.nn as nn
 import logging
 import numpy as np
 from diffusers import StableDiffusionControlNetPipeline, ControlNetModel, LCMScheduler
+from diffusers.models.controlnet import ControlNetOutput
 from python_coreml_stable_diffusion.coreml_model import CoreMLModel
 from PIL import Image
 
+CONTROLNET_ID = "lllyasviel/sd-controlnet-scribble"
+CONTROLNET_BACKENDS = ("coreml", "pytorch")
+# One unit for every Core ML model: mixing units across the UNet and ControlNet made them
+# contend for the ANE/GPU (54-148 s renders). CPU_AND_NE was fastest and ~1.1 GB lighter
+# than ALL on an 8 GB M2 (see CHG-20261014-01, E15).
+COMPUTE_UNITS = ("CPU_AND_NE", "ALL", "CPU_AND_GPU", "CPU_ONLY")
+NUM_DOWN_RESIDUALS = 12  # additional_residual_0..11 = down blocks, additional_residual_12 = mid block
+
+
+# --- SHARED CORE ML I/O HELPERS (used by the UNet and ControlNet wrappers) ---
+def safe_predict(coreml_wrapper, inputs):
+    if hasattr(coreml_wrapper, "predict"):
+        return coreml_wrapper.predict(inputs)
+    if hasattr(coreml_wrapper, "model") and hasattr(coreml_wrapper.model, "predict"):
+        return coreml_wrapper.model.predict(inputs)
+    raise AttributeError(f"Could not find .predict() on {type(coreml_wrapper)}")
+
+
+def sanitize_input(val, target_meta, do_pad):
+    target_shape = target_meta["shape"]
+    target_dtype_str = target_meta["dtype"]
+    target_dtype = np.float16 if "float16" in str(target_dtype_str) else np.float32
+
+    # 1. Scalar Expansion
+    if torch.is_tensor(val) and val.ndim == 0: val = val.unsqueeze(0)
+    if isinstance(val, np.ndarray) and val.ndim == 0: val = np.expand_dims(val, 0)
+
+    # 2. Batch Padding
+    if do_pad and target_shape[0] == 2:
+        if torch.is_tensor(val) and val.shape[0] == 1: val = torch.cat([val, val])
+        elif isinstance(val, np.ndarray) and val.shape[0] == 1: val = np.concatenate([val, val])
+
+    # 3. Torch -> Numpy
+    if torch.is_tensor(val): val = val.detach().cpu().numpy()
+
+    # 4. Rank Expansion & Transpose
+    current_rank = len(val.shape)
+    target_rank = len(target_shape)
+
+    if current_rank < target_rank:
+        diff = target_rank - current_rank
+        for _ in range(diff):
+            val = np.expand_dims(val, axis=-1)
+
+    if len(val.shape) == 4 and val.shape[1] == 77 and val.shape[2] == 768:
+        if target_shape[1] == 768 and target_shape[3] == 77:
+             val = np.transpose(val, (0, 2, 3, 1))
+
+    # 5. Dtype Casting
+    if val.dtype != target_dtype: val = val.astype(target_dtype)
+
+    return val
+
+
+def prepare_inputs(model_meta, inputs_pool, do_pad):
+    prepared = {}
+    for k in model_meta:
+        if k in inputs_pool:
+            val = inputs_pool[k]
+            prepared[k] = sanitize_input(val, model_meta[k], do_pad)
+        else:
+            meta = model_meta[k]
+            prepared[k] = np.zeros(meta["shape"], dtype=np.float32)
+    return prepared
+
+
+def needs_batch_pad(coreml_model, sample):
+    """The models are compiled for batch 2 (CFG); at guidance <= 1 the pipeline sends batch 1."""
+    meta = coreml_model.expected_inputs.get("sample")
+    return bool(meta) and meta["shape"][0] == 2 and sample.shape[0] == 1
+
+
+class CoreMLControlNetWrapper(ControlNetModel):
+    """
+    Runs the compiled ControlNet.mlpackage on the ANE behind the ControlNetModel interface.
+
+    StableDiffusionControlNetPipeline type-checks `isinstance(controlnet, ControlNetModel)`
+    and reads `config.global_pool_conditions` / `dtype`, so this subclasses ControlNetModel
+    but skips its __init__: only nn.Module state and the real config are set up, no weights.
+    The Core ML graph returns unscaled residuals, so `conditioning_scale` is applied here
+    exactly as ControlNetModel.forward does.
+    """
+
+    def __init__(self, coreml_model, config):
+        nn.Module.__init__(self)
+        # ControlNetModel's @register_to_config also records __init__ defaults for keys an
+        # older config.json lacks (e.g. global_pool_conditions); mirror that here.
+        full_config = {name: p.default for name, p in inspect.signature(ControlNetModel.__init__).parameters.items()
+                       if name != "self" and p.default is not inspect.Parameter.empty}
+        full_config.update({k: v for k, v in config.items() if not k.startswith("_")})
+        self.register_to_config(**full_config)
+        self.coreml_model = coreml_model
+
+    @property
+    def device(self): return torch.device("cpu")
+
+    @property
+    def dtype(self): return torch.float32
+
+    def forward(self, sample, timestep, encoder_hidden_states, controlnet_cond,
+                conditioning_scale=1.0, guess_mode=False, return_dict=True, **kwargs):
+        if guess_mode:
+            raise NotImplementedError("guess_mode is not supported by the Core ML ControlNet")
+        inputs_pool = {
+            "sample": sample,
+            "timestep": timestep,
+            "encoder_hidden_states": encoder_hidden_states,
+            "controlnet_cond": controlnet_cond,
+        }
+        do_pad = needs_batch_pad(self.coreml_model, sample)
+        out = safe_predict(self.coreml_model,
+                           prepare_inputs(self.coreml_model.expected_inputs, inputs_pool, do_pad))
+
+        batch = sample.shape[0]
+        residuals = [torch.from_numpy(np.asarray(out[f"additional_residual_{i}"][:batch], dtype=np.float32))
+                     * conditioning_scale for i in range(NUM_DOWN_RESIDUALS + 1)]
+        down_block_res_samples, mid_block_res_sample = residuals[:NUM_DOWN_RESIDUALS], residuals[-1]
+
+        if not return_dict:
+            return (down_block_res_samples, mid_block_res_sample)
+        return ControlNetOutput(down_block_res_samples=down_block_res_samples,
+                                mid_block_res_sample=mid_block_res_sample)
+
+
 class CoreMLEngine:
-    def __init__(self, hf_repo_id="tekraj/sketch-render-coreml", model_dir="models/coreml"):
+    def __init__(self, hf_repo_id="tekraj/sketch-render-coreml", model_dir="models/coreml",
+                 controlnet_backend="coreml", compute_unit="CPU_AND_NE"):
         print(f" ** Initializing CoreML Engine (Frankenstein Mode)...")
-        
+        if controlnet_backend not in CONTROLNET_BACKENDS:
+            raise ValueError(f"controlnet_backend {controlnet_backend!r} not in {CONTROLNET_BACKENDS}")
+        if compute_unit not in COMPUTE_UNITS:
+            raise ValueError(f"compute_unit {compute_unit!r} not in {COMPUTE_UNITS}")
+        self.controlnet_backend = controlnet_backend
+        self.compute_unit = compute_unit
+
         self._restore_apple_filenames(model_dir)
-        
+
         prefix = "Stable_Diffusion_version_runwayml_stable-diffusion-v1-5_"
         text_enc_path = os.path.join(model_dir, f"{prefix}text_encoder.mlpackage")
         vae_dec_path = os.path.join(model_dir, f"{prefix}vae_decoder.mlpackage")
@@ -20,24 +153,28 @@ class CoreMLEngine:
         unet_c2_path = os.path.join(model_dir, f"{prefix}unet_chunk2.mlpackage")
         control_path = os.path.join(model_dir, "ControlNet.mlpackage")
 
+        # The Core ML ControlNet is built first and handed to the pipeline, so the
+        # PyTorch fp32 ControlNet weights are never loaded on that path.
+        if controlnet_backend == "coreml":
+            if not os.path.exists(control_path):
+                raise FileNotFoundError(
+                    f"{control_path} not found. Compile it with `python -m src.engine.coreml_compiler`, "
+                    f"or use controlnet_backend='pytorch'.")
+            print(" ** Loading Core ML ControlNet (ANE)...")
+            controlnet = CoreMLControlNetWrapper(CoreMLModel(control_path, compute_unit),
+                                                 ControlNetModel.load_config(CONTROLNET_ID))
+        else:
+            print(" ** Loading PyTorch ControlNet (fp32, CPU)...")
+            controlnet = ControlNetModel.from_pretrained(CONTROLNET_ID)
+
         print(" ** Loading PyTorch config skeleton...")
         self.pipe = StableDiffusionControlNetPipeline.from_pretrained(
             "runwayml/stable-diffusion-v1-5",
-            controlnet=ControlNetModel.from_pretrained("lllyasviel/sd-controlnet-scribble"),
+            controlnet=controlnet,
             torch_dtype=torch.float32,
             safety_checker=None,
             low_cpu_mem_usage=True
         ).to("cpu")
-
-        compute_unit = "ALL"
-
-        # --- HELPER: SAFE PREDICT ---
-        def safe_predict(coreml_wrapper, inputs):
-            if hasattr(coreml_wrapper, "predict"):
-                return coreml_wrapper.predict(inputs)
-            if hasattr(coreml_wrapper, "model") and hasattr(coreml_wrapper.model, "predict"):
-                return coreml_wrapper.model.predict(inputs)
-            raise AttributeError(f"Could not find .predict() on {type(coreml_wrapper)}")
 
         # --- COMPONENT 1: TEXT ENCODER ---
         class CoreMLTextEncoderWrapper(nn.Module):
@@ -115,52 +252,6 @@ class CoreMLEngine:
             @property
             def dtype(self): return torch.float32
 
-            def _sanitize_input(self, val, target_meta, do_pad):
-                target_shape = target_meta["shape"]
-                target_dtype_str = target_meta["dtype"]
-                target_dtype = np.float16 if "float16" in str(target_dtype_str) else np.float32
-
-                # 1. Scalar Expansion
-                if torch.is_tensor(val) and val.ndim == 0: val = val.unsqueeze(0)
-                if isinstance(val, np.ndarray) and val.ndim == 0: val = np.expand_dims(val, 0)
-
-                # 2. Batch Padding
-                if do_pad and target_shape[0] == 2:
-                    if torch.is_tensor(val) and val.shape[0] == 1: val = torch.cat([val, val])
-                    elif isinstance(val, np.ndarray) and val.shape[0] == 1: val = np.concatenate([val, val])
-
-                # 3. Torch -> Numpy
-                if torch.is_tensor(val): val = val.detach().cpu().numpy()
-
-                # 4. Rank Expansion & Transpose
-                current_rank = len(val.shape)
-                target_rank = len(target_shape)
-                
-                if current_rank < target_rank:
-                    diff = target_rank - current_rank
-                    for _ in range(diff):
-                        val = np.expand_dims(val, axis=-1)
-
-                if len(val.shape) == 4 and val.shape[1] == 77 and val.shape[2] == 768:
-                    if target_shape[1] == 768 and target_shape[3] == 77:
-                         val = np.transpose(val, (0, 2, 3, 1))
-
-                # 5. Dtype Casting
-                if val.dtype != target_dtype: val = val.astype(target_dtype)
-                
-                return val
-
-            def _prepare_inputs(self, model_meta, inputs_pool, do_pad):
-                prepared = {}
-                for k in model_meta:
-                    if k in inputs_pool:
-                        val = inputs_pool[k]
-                        prepared[k] = self._sanitize_input(val, model_meta[k], do_pad)
-                    else:
-                        meta = model_meta[k]
-                        prepared[k] = np.zeros(meta["shape"], dtype=np.float32)
-                return prepared
-
             def forward(self, sample, timestep, encoder_hidden_states, **kwargs):
                 inputs_pool = {
                     "sample": sample,
@@ -174,17 +265,13 @@ class CoreMLEngine:
                 if "mid_block_additional_residual" in kwargs:
                     inputs_pool["additional_residual_12"] = kwargs["mid_block_additional_residual"]
 
-                do_pad = False
-                if "sample" in self.chunk1.expected_inputs:
-                    expected = self.chunk1.expected_inputs["sample"]["shape"][0]
-                    if expected == 2 and sample.shape[0] == 1:
-                        do_pad = True
+                do_pad = needs_batch_pad(self.chunk1, sample)
 
-                chunk1_inputs = self._prepare_inputs(self.chunk1.expected_inputs, inputs_pool, do_pad)
+                chunk1_inputs = prepare_inputs(self.chunk1.expected_inputs, inputs_pool, do_pad)
                 out1 = safe_predict(self.chunk1, chunk1_inputs)
-                
+
                 inputs_pool.update(out1)
-                chunk2_inputs = self._prepare_inputs(self.chunk2.expected_inputs, inputs_pool, do_pad)
+                chunk2_inputs = prepare_inputs(self.chunk2.expected_inputs, inputs_pool, do_pad)
                 res = safe_predict(self.chunk2, chunk2_inputs)
                 
                 final_out = list(res.values())[0]

@@ -40,7 +40,9 @@ def build_engine(engine_type: str, options: Optional[Dict] = None) -> EngineAdap
     options = options or {}
     if engine_type == "coreml":
         from src.engine.coreml_engine import CoreMLEngine
-        engine = CoreMLEngine(model_dir=options.get("model_dir", "models/coreml"))
+        engine = CoreMLEngine(model_dir=options.get("model_dir", "models/coreml"),
+                              controlnet_backend=options.get("controlnet_backend", "coreml"),
+                              compute_unit=options.get("compute_unit", "CPU_AND_NE"))
         # Core ML predictions are synchronous; the PyTorch parts of this engine run on CPU.
         return EngineAdapter("coreml", engine, "cpu", True, _steps_guidance_call(engine))
 

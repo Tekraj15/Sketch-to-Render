@@ -1,0 +1,21 @@
+# Edge A/B reference: CoreML engine with ControlNet still on PyTorch fp32/CPU (the pre-CHG-20261014-01
+# path). Same app-effective params as edge_coreml_app_defaults.yaml, so the two configs differ only
+# in the ControlNet backend and compute unit (i.e. it reproduces the pre-CHG-20261014-01 engine).
+name: edge_coreml_cn_pytorch
+engine:
+  type: coreml
+  options:
+    model_dir: models/coreml
+    controlnet_backend: pytorch
+    compute_unit: ALL            # the pre-change unit
+params:
+  steps: 4
+  guidance: 1.0
+  control_scale: 1.0
+  negative_prompt: "low quality, bad anatomy, blurry"
+control_mode: auto
+canvas: 512
+seeds: [0, 1, 2, 3]
+warmup: 1
+manifest: eval/sketchbench/manifest.jsonl
+app_path: app.py

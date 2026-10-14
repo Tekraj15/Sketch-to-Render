@@ -149,26 +149,30 @@ All numbers in this section come from the evaluation harness (`benchmarks/run_ev
 | ![Local CoreML run](assets/sketch-render-red-thar-best-local.png) | ![ZeroGPU run](assets/sketch-render-green-van-hill.png) |
 | ![Local CoreML run 2](assets/red-thar-localrun-best34.png) | ![ZeroGPU run 2](assets/girl-on-red-vest.png) |
 
-### 5.2 Latency: edge baseline (CoreML engine, Apple M2, 8 GB RAM)
+### 5.2 Latency: edge engine (CoreML, Apple M2, 8 GB RAM)
 
-Measured on SketchBench v0: 13 items × 4 seeds = 52 warm renders at the settings the UI actually sends (4 LCM steps, guidance 1.0, control scale 1.0, 512×512). Run: `20261014-013359_edge_coreml_app_defaults`.
+Measured on SketchBench v0: 13 items × 4 seeds = 52 warm renders at the settings the UI actually sends (4 LCM steps, guidance 1.0, control scale 1.0, 512×512).
 
-| Stage (per image) | p50 | Share | Runs on |
-| :--- | :---: | :---: | :--- |
-| **End-to-end** | **27.8 s** (p95 31.3 s) | 100% | |
-| ControlNet (4 calls) | 24.2 s | ~87% | PyTorch fp32 on **CPU** |
-| UNet (4 calls) | 3.2 s | ~12% | Core ML / ANE |
-| VAE decode | 0.3 s | ~1% | Core ML |
-| Text encoder | 0.02 s | <1% | Core ML |
+| Stage (per image, p50) | Before: ControlNet in PyTorch on CPU | **Now: ControlNet on the Neural Engine** |
+| :--- | :---: | :---: |
+| **End-to-end** | 27.8 s (p95 31.3 s) | **3.7 s (p95 5.1 s), 7.5× faster** |
+| ControlNet (4 calls) | 24.2 s (fp32, CPU) | **0.9 s** (Core ML, 6-bit, ANE) |
+| UNet (4 calls) | 3.2 s | 2.5 s |
+| VAE decode | 0.3 s | 0.3 s |
+| Text encoder | 0.02 s | 0.01 s |
+| Engine load (once per start) | 96 s | 155 s |
+| First (cold) render | 42.5 s | 25.6 s |
 
-- Engine load is 96 s and the first (cold) render takes 42.5 s; neither is included above.
-- System swap grew from 3.0 GB to 6.7 GB over the run, so the 8 GB machine is under memory pressure.
-- **Takeaway:** ControlNet still runs in PyTorch on the CPU, and that dominates latency. The compiled `ControlNet.mlpackage` isn't wired into the engine yet. In this compile path the UNet chunks are fp16, not 6-bit. Both are the first items on the Round-2 speed roadmap.
+Runs: `20261014-013359_edge_coreml_app_defaults` (before) and `20261014-121500_edge_coreml_app_defaults` (now).
+
+- **What changed:** the engine now runs the compiled `ControlNet.mlpackage` on the ANE, and the PyTorch ControlNet weights are no longer loaded. All Core ML models share one compute unit, `CPU_AND_NE`. In measurements, `ALL` was about 25% slower at p50 (4.6 s vs 3.7 s) and kept about 1.1 GB more resident (3.07 GB vs 1.95 GB peak footprint). Mixing units across models made the UNet and ControlNet contend for the ANE.
+- **Quality is unchanged.** Paired against the "before" run on identical items and seeds, structure F1 changed by −0.008 (95% CI includes 0), ImageReward by +0.05 (CI includes 0), and HPSv2.1 by +0.004 (CI [0.000, 0.008]). The previous path can still be selected with `controlnet_backend="pytorch"` (config `configs/eval/edge_coreml_cn_pytorch.yaml`).
+- **Still open on the edge roadmap:** the UNet chunks in this compile path are fp16, not 6-bit. They're also compiled for batch 2, so a CFG-off render pads and discards half the work. And engine load time grew because of the extra ANE compile.
 - **Cloud (ZeroGPU)** hasn't been measured with the harness yet. Run `configs/eval/cloud_cuda_app_defaults.yaml` on a CUDA machine or the Space.
 
 ### 5.3 Quality: edge baseline
 
-Mean with 95% bootstrap CI across items; seeds are averaged within each item first.
+Mean with 95% bootstrap CI across items; seeds are averaged within each item first. These are the "before" run's numbers; the Neural-Engine ControlNet run matches them within noise (see §5.2).
 
 | Metric | All (13 items) | Scribbles (3) | Real photos (5) | Shaded drawings (4) |
 | :--- | :---: | :---: | :---: | :---: |

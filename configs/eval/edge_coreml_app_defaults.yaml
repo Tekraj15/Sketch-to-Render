@@ -5,6 +5,8 @@ engine:
   type: coreml
   options:
     model_dir: models/coreml
+    controlnet_backend: coreml   # CHG-20261014-01; edge_coreml_cn_pytorch.yaml pins the old PyTorch path
+    compute_unit: CPU_AND_NE     # same unit for every Core ML model (mixing units thrashes the ANE)
 params:
   steps: 4
   guidance: 1.0
